@@ -73,6 +73,10 @@
     <p style="font-size:.8rem; margin-top:6px">Нужен оригинал с камеры/телефона (JPEG/HEIC с EXIF). Фото из мессенджеров обычно без геоданных.</p>
   </div>
   <input type="file" id="fileInput" accept="image/*,.heic">
+  <p style="text-align:center; margin-top:10px">
+    <a href="#" id="pickAnyFile" style="color:#94a3b8; font-size:.85rem">&#128193; С Android? Выберите через «Файлы» — так сохраняются GPS-координаты</a>
+  </p>
+  <input type="file" id="fileInputAny" style="display:none">
 
   <div id="error"></div>
 
@@ -126,6 +130,10 @@ let current = null; // { shotDate, tzKnown } активного фото
 
 dropzone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+// Android: input без accept открывает системный выбор файлов («Файлы»), который не вырезает GPS
+const fileInputAny = document.getElementById('fileInputAny');
+document.getElementById('pickAnyFile').addEventListener('click', e => { e.preventDefault(); fileInputAny.click(); });
+fileInputAny.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
 ['dragover','dragenter'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
 ['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
 dropzone.addEventListener('drop', e => { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
