@@ -40,6 +40,7 @@
   .btn-shadowmap { background: #f59e0b; color: #0f172a; }
   .btn-osm { background: #334155; color: #e2e8f0; }
   .warn { background: #78350f; border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: .85rem; display: none; }
+  .info { background: #1e3a5f; border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: .85rem; display: none; }
   .legend { font-size: .8rem; color: #94a3b8; margin-top: 8px; }
   .legend span { display: inline-block; margin-right: 14px; }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
@@ -72,6 +73,7 @@
         <div class="row"><span class="label">Высота над горизонтом</span><span class="value" id="altitude"></span></div>
         <div class="row"><span class="label">Направление тени</span><span class="value" id="shadow"></span></div>
         <div class="row"><span class="label">Восход / Закат (UTC)</span><span class="value" id="riseset"></span></div>
+        <div class="info" id="pickWarn">&#128205; В этом фото нет GPS-координат. Кликните на карте место съёмки — солнце рассчитается по времени из EXIF. Кликать можно сколько угодно раз.</div>
         <div class="warn" id="tzWarn">&#9888;&#65039; В EXIF нет часового пояса — время интерпретировано как в вашем браузере. Положение солнца может быть смещено, если фото снято в другом поясе.</div>
         <div class="warn" id="nightWarn">&#127769; Солнце было ниже горизонта — снимок сделан ночью или в сумерках.</div>
       </div>
@@ -80,10 +82,12 @@
     <p class="legend">
       <span><span class="dot" style="background:#f59e0b"></span>Направление на солнце</span>
       <span><span class="dot" style="background:#6366f1"></span>Направление тени</span>
+      <span><span class="dot" style="background:#1e1b4b"></span>Тени зданий (OSM)</span>
     </p>
+    <p class="legend" id="shadowNote"></p>
     <div class="buttons">
-      <a class="btn btn-shadowmap" id="shadowmapLink" target="_blank" rel="noopener">Открыть в Shadowmap (3D-тени) &#8599;</a>
-      <a class="btn btn-osm" id="osmLink" target="_blank" rel="noopener">OpenStreetMap &#8599;</a>
+      <a class="btn btn-shadowmap" id="shadowmapLink" target="_blank" rel="noopener" style="display:none">Открыть в Shadowmap (3D-тени) &#8599;</a>
+      <a class="btn btn-osm" id="osmLink" target="_blank" rel="noopener" style="display:none">OpenStreetMap &#8599;</a>
     </div>
   </div>
 </div>
@@ -96,7 +100,8 @@ const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const errorBox = document.getElementById('error');
 const results = document.getElementById('results');
-let map, layerGroup;
+let map, layerGroup, shadowGroup;
+let current = null; // { shotDate, tzKnown } активного фото
 
 dropzone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
@@ -118,11 +123,10 @@ async function handleFile(file) {
   } catch (e) {
     return showError('Не удалось прочитать EXIF: ' + e.message);
   }
-  if (!exif || exif.latitude == null || exif.longitude == null) {
-    return showError('В этом фото нет GPS-координат. Мессенджеры и соцсети удаляют геоданные — попробуйте оригинальный файл с камеры или телефона.');
-  }
+  if (!exif) return showError('В этом файле нет EXIF-данных. Мессенджеры и соцсети удаляют их — попробуйте оригинальный файл с камеры или телефона.');
 
-  const lat = exif.latitude, lng = exif.longitude;
+  // GPS валиден, только если это конечные числа (бывает пустой/битый GPS-блок → NaN)
+  const hasGps = Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude);
 
   // --- Определяем момент съёмки как UTC-инстант ---
   let shotDate = null, tzKnown = false;
@@ -136,7 +140,7 @@ async function handleFile(file) {
     }
   }
   // 2) DateTimeOriginal + явный часовой пояс из EXIF
-  if (!shotDate && exif.DateTimeOriginal) {
+  if (!shotDate && exif.DateTimeOriginal instanceof Date && !isNaN(exif.DateTimeOriginal)) {
     const offset = exif.OffsetTimeOriginal || exif.OffsetTime;
     if (offset && /^[+-]\d{2}:\d{2}$/.test(offset)) {
       const dt = exif.DateTimeOriginal;
@@ -147,36 +151,67 @@ async function handleFile(file) {
       shotDate = exif.DateTimeOriginal; // трактуем в поясе браузера
     }
   }
-  if (!shotDate) return showError('В фото есть координаты, но нет времени съёмки — положение солнца рассчитать нельзя.');
+  if (!shotDate) {
+    return showError(hasGps
+      ? 'В фото есть координаты, но нет времени съёмки — положение солнца рассчитать нельзя.'
+      : 'В фото нет ни GPS-координат, ни времени съёмки. Попробуйте оригинальный файл с камеры или телефона.');
+  }
 
-  // --- Солнце ---
+  current = { shotDate, tzKnown };
+
+  // --- Общие поля ---
+  document.getElementById('preview').src = URL.createObjectURL(file);
+  document.getElementById('time').textContent = shotDate.toLocaleString('ru-RU', { timeZone: 'UTC' }) + ' UTC';
+  document.getElementById('camera').textContent = [exif.Make, exif.Model].filter(Boolean).join(' ') || '—';
+  document.getElementById('tzWarn').style.display = tzKnown ? 'none' : 'block';
+  results.style.display = 'block';
+
+  if (hasGps) {
+    document.getElementById('pickWarn').style.display = 'none';
+    computeAndShow(exif.latitude, exif.longitude);
+  } else {
+    // Режим ручного выбора места
+    document.getElementById('pickWarn').style.display = 'block';
+    document.getElementById('nightWarn').style.display = 'none';
+    document.getElementById('coords').textContent = 'кликните на карте';
+    ['azimuth','altitude','shadow','riseset'].forEach(id => document.getElementById(id).textContent = '—');
+    document.getElementById('shadowmapLink').style.display = 'none';
+    document.getElementById('osmLink').style.display = 'none';
+    document.getElementById('shadowNote').textContent = '';
+    initMap();
+    layerGroup.clearLayers();
+    shadowGroup.clearLayers();
+    map.setView([40, 20], 2);
+    setTimeout(() => map.invalidateSize(), 100);
+  }
+}
+
+// Расчёт солнца и отрисовка для заданной точки (из EXIF или клика по карте)
+function computeAndShow(lat, lng) {
+  const { shotDate, tzKnown } = current;
+
   const pos = SunCalc.getPosition(shotDate, lat, lng);
   const azDeg = ((pos.azimuth * 180 / Math.PI) + 180) % 360; // 0°=север, по часовой
   const altDeg = pos.altitude * 180 / Math.PI;
   const shadowDeg = (azDeg + 180) % 360;
   const times = SunCalc.getTimes(shotDate, lat, lng);
 
-  // --- Вывод ---
-  document.getElementById('preview').src = URL.createObjectURL(file);
   document.getElementById('coords').textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
-  document.getElementById('time').textContent = shotDate.toLocaleString('ru-RU', { timeZone: 'UTC' }) + ' UTC';
-  document.getElementById('camera').textContent = [exif.Make, exif.Model].filter(Boolean).join(' ') || '—';
   document.getElementById('azimuth').textContent = azDeg.toFixed(1) + '° (' + compass(azDeg) + ')';
   document.getElementById('altitude').textContent = altDeg.toFixed(1) + '°';
   document.getElementById('shadow').textContent = shadowDeg.toFixed(1) + '° (' + compass(shadowDeg) + ')';
   const fmt = d => (d && !isNaN(d)) ? d.toISOString().substr(11,5) : '—';
   document.getElementById('riseset').textContent = fmt(times.sunrise) + ' / ' + fmt(times.sunset);
-  document.getElementById('tzWarn').style.display = tzKnown ? 'none' : 'block';
   document.getElementById('nightWarn').style.display = altDeg < 0 ? 'block' : 'none';
 
-  // --- Ссылки ---
   const ms = shotDate.getTime();
-  document.getElementById('shadowmapLink').href =
-    `https://app.shadowmap.org/?lat=${lat.toFixed(5)}&lng=${lng.toFixed(5)}&zoom=17&time=${ms}&basemap=map&hud=true`;
-  document.getElementById('osmLink').href =
-    `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=17/${lat}/${lng}`;
+  const sm = document.getElementById('shadowmapLink');
+  sm.style.display = 'inline-block';
+  sm.href = `https://app.shadowmap.org/?lat=${lat.toFixed(5)}&lng=${lng.toFixed(5)}&zoom=17&time=${ms}&basemap=map&hud=true`;
+  const om = document.getElementById('osmLink');
+  om.style.display = 'inline-block';
+  om.href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=17/${lat}/${lng}`;
 
-  results.style.display = 'block';
   renderMap(lat, lng, azDeg, shadowDeg, altDeg);
 }
 
@@ -194,16 +229,23 @@ function destPoint(lat, lng, bearingDeg, d) {
   ];
 }
 
+function initMap() {
+  if (map) return;
+  map = L.map('map');
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map);
+  shadowGroup = L.layerGroup().addTo(map); // тени зданий — под маркерами
+  layerGroup = L.layerGroup().addTo(map);
+  // Клик по карте = пересчитать для этой точки (работает всегда)
+  map.on('click', e => { if (current) computeAndShow(e.latlng.lat, e.latlng.lng); });
+}
+
 function renderMap(lat, lng, azDeg, shadowDeg, altDeg) {
-  if (!map) {
-    map = L.map('map');
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
-    }).addTo(map);
-    layerGroup = L.layerGroup().addTo(map);
-  }
+  initMap();
   layerGroup.clearLayers();
-  map.setView([lat, lng], 17);
+  const keepZoom = map.getZoom() && map.getZoom() >= 10;
+  map.setView([lat, lng], keepZoom ? map.getZoom() : 17);
   setTimeout(() => map.invalidateSize(), 100);
 
   L.marker([lat, lng]).addTo(layerGroup).bindPopup('Место съёмки').openPopup();
@@ -215,6 +257,93 @@ function renderMap(lat, lng, azDeg, shadowDeg, altDeg) {
     L.polyline([[lat, lng], destPoint(lat, lng, shadowDeg, shadowLen)], { color: '#6366f1', weight: 4, dashArray: '8 6' })
       .addTo(layerGroup).bindTooltip('Тень → ' + shadowDeg.toFixed(0) + '°');
   }
+  drawBuildingShadows(lat, lng, shadowDeg, altDeg);
+}
+
+// Тени реальных зданий: контуры и высоты из OpenStreetMap (Overpass API), геометрия тени — своя математика
+let shadowReqId = 0;
+async function drawBuildingShadows(lat, lng, shadowDeg, altDeg) {
+  const note = document.getElementById('shadowNote');
+  const reqId = ++shadowReqId;
+  shadowGroup.clearLayers();
+  if (altDeg <= 0) { note.textContent = ''; return; }
+  note.textContent = 'Загружаю здания из OpenStreetMap…';
+
+  const query = `[out:json][timeout:20];way["building"](around:250,${lat},${lng});out geom 500;`;
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+  ];
+  let data = null;
+  for (const url of endpoints) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(query),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (!resp.ok) continue;
+      data = await resp.json();
+      break;
+    } catch (e) { /* пробуем следующее зеркало */ }
+  }
+  if (reqId !== shadowReqId) return; // пользователь уже кликнул другую точку
+  if (!data) {
+    note.textContent = 'Серверы OSM сейчас недоступны — тени зданий не построены (попробуйте позже).';
+    return;
+  }
+
+  // Локальная плоская проекция: метры относительно точки съёмки
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  const toM  = p => [(p.lon - lng) * 111320 * cosLat, (p.lat - lat) * 111320];
+  const toLL = m => [lat + m[1] / 111320, lng + m[0] / (111320 * cosLat)];
+
+  const b = shadowDeg * Math.PI / 180;
+  const tanAlt = Math.max(Math.tan(altDeg * Math.PI / 180), 0.02);
+  const shadows = [], footprints = [];
+
+  for (const el of (data.elements || [])) {
+    if (!el.geometry || el.geometry.length < 3) continue;
+    const t = el.tags || {};
+    let h = parseFloat(t.height) || (parseFloat(t['building:levels']) || 0) * 3 || 9; // без данных: ~3 этажа
+    h = Math.max(h, 3);
+    const len = Math.min(h / tanAlt, 400); // длина тени, м (с потолком)
+    const dx = len * Math.sin(b), dy = len * Math.cos(b);
+
+    const pts = el.geometry.map(toM);
+    const hull = convexHull(pts.concat(pts.map(p => [p[0] + dx, p[1] + dy])));
+    shadows.push(hull.map(toLL));
+    footprints.push(pts.map(toLL));
+  }
+
+  shadows.forEach(s => L.polygon(s, { stroke: false, fillColor: '#1e1b4b', fillOpacity: 0.4 }).addTo(shadowGroup));
+  footprints.forEach(f => L.polygon(f, { color: '#64748b', weight: 1, fillColor: '#475569', fillOpacity: 0.9 }).addTo(shadowGroup));
+  note.textContent = shadows.length
+    ? `Тени рассчитаны для ${shadows.length} зданий. Высоты из OSM (где нет — ~3 этажа), форма теней приближённая.`
+    : 'Зданий в OSM рядом не найдено.';
+}
+
+// Выпуклая оболочка (monotone chain)
+function convexHull(points) {
+  const pts = points.slice().sort((a, c) => a[0] - c[0] || a[1] - c[1]);
+  const cross = (o, a, c) => (a[0]-o[0])*(c[1]-o[1]) - (a[1]-o[1])*(c[0]-o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
 }
 </script>
 </body>
