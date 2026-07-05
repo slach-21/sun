@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Фото → Место и Солнце</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; margin-bottom: 20px; font-size: .95rem; }
+  #dropzone {
+    border: 2px dashed #475569; border-radius: 12px; padding: 40px 20px; text-align: center;
+    cursor: pointer; transition: all .2s; background: #1e293b;
+  }
+  #dropzone:hover, #dropzone.drag { border-color: #f59e0b; background: #27354d; }
+  #dropzone p { color: #94a3b8; }
+  #dropzone .icon { font-size: 2.5rem; margin-bottom: 8px; }
+  #fileInput { display: none; }
+  #error { display: none; background: #7f1d1d; border-radius: 8px; padding: 14px 16px; margin-top: 16px; }
+  #results { display: none; margin-top: 20px; }
+  .grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: #1e293b; border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 1rem; color: #f59e0b; margin-bottom: 10px; }
+  #preview { width: 100%; border-radius: 8px; display: block; }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #334155; font-size: .9rem; gap: 10px; }
+  .row:last-child { border-bottom: none; }
+  .row .label { color: #94a3b8; white-space: nowrap; }
+  .row .value { text-align: right; word-break: break-word; }
+  #map { height: 420px; border-radius: 12px; margin-top: 16px; }
+  .buttons { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 20px; border-radius: 8px; text-decoration: none;
+    font-weight: 600; font-size: .9rem; transition: opacity .2s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-shadowmap { background: #f59e0b; color: #0f172a; }
+  .btn-osm { background: #334155; color: #e2e8f0; }
+  .warn { background: #78350f; border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: .85rem; display: none; }
+  .legend { font-size: .8rem; color: #94a3b8; margin-top: 8px; }
+  .legend span { display: inline-block; margin-right: 14px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>&#9728;&#65039; Фото → Место и Солнце</h1>
+  <p class="subtitle">Загрузите фото — узнайте, где оно снято и где было солнце в момент съёмки</p>
+
+  <div id="dropzone">
+    <div class="icon">&#128247;</div>
+    <p><b>Перетащите фото сюда</b> или нажмите для выбора</p>
+    <p style="font-size:.8rem; margin-top:6px">Нужен оригинал с камеры/телефона (JPEG/HEIC с EXIF). Фото из мессенджеров обычно без геоданных.</p>
+  </div>
+  <input type="file" id="fileInput" accept="image/*,.heic">
+
+  <div id="error"></div>
+
+  <div id="results">
+    <div class="grid">
+      <div class="card"><img id="preview" alt="Фото"></div>
+      <div class="card">
+        <h2>Данные снимка</h2>
+        <div class="row"><span class="label">Координаты</span><span class="value" id="coords"></span></div>
+        <div class="row"><span class="label">Время съёмки</span><span class="value" id="time"></span></div>
+        <div class="row"><span class="label">Камера</span><span class="value" id="camera"></span></div>
+        <h2 style="margin-top:14px">Солнце в момент съёмки</h2>
+        <div class="row"><span class="label">Азимут солнца</span><span class="value" id="azimuth"></span></div>
+        <div class="row"><span class="label">Высота над горизонтом</span><span class="value" id="altitude"></span></div>
+        <div class="row"><span class="label">Направление тени</span><span class="value" id="shadow"></span></div>
+        <div class="row"><span class="label">Восход / Закат (UTC)</span><span class="value" id="riseset"></span></div>
+        <div class="warn" id="tzWarn">&#9888;&#65039; В EXIF нет часового пояса — время интерпретировано как в вашем браузере. Положение солнца может быть смещено, если фото снято в другом поясе.</div>
+        <div class="warn" id="nightWarn">&#127769; Солнце было ниже горизонта — снимок сделан ночью или в сумерках.</div>
+      </div>
+    </div>
+    <div id="map"></div>
+    <p class="legend">
+      <span><span class="dot" style="background:#f59e0b"></span>Направление на солнце</span>
+      <span><span class="dot" style="background:#6366f1"></span>Направление тени</span>
+    </p>
+    <div class="buttons">
+      <a class="btn btn-shadowmap" id="shadowmapLink" target="_blank" rel="noopener">Открыть в Shadowmap (3D-тени) &#8599;</a>
+      <a class="btn btn-osm" id="osmLink" target="_blank" rel="noopener">OpenStreetMap &#8599;</a>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.8.0/suncalc.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const errorBox = document.getElementById('error');
+const results = document.getElementById('results');
+let map, layerGroup;
+
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+['dragover','dragenter'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+dropzone.addEventListener('drop', e => { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+
+function showError(msg) {
+  errorBox.textContent = msg;
+  errorBox.style.display = 'block';
+  results.style.display = 'none';
+}
+
+async function handleFile(file) {
+  errorBox.style.display = 'none';
+  let exif;
+  try {
+    exif = await exifr.parse(file, { gps: true, exif: true, ifd0: true });
+  } catch (e) {
+    return showError('Не удалось прочитать EXIF: ' + e.message);
+  }
+  if (!exif || exif.latitude == null || exif.longitude == null) {
+    return showError('В этом фото нет GPS-координат. Мессенджеры и соцсети удаляют геоданные — попробуйте оригинальный файл с камеры или телефона.');
+  }
+
+  const lat = exif.latitude, lng = exif.longitude;
+
+  // --- Определяем момент съёмки как UTC-инстант ---
+  let shotDate = null, tzKnown = false;
+  // 1) GPS-время — всегда UTC, самый надёжный источник
+  if (exif.GPSDateStamp && exif.GPSTimeStamp) {
+    const d = String(exif.GPSDateStamp).split(/[:\s-]+/).map(Number); // [Y,M,D]
+    const t = Array.from(exif.GPSTimeStamp).map(Number);              // [h,m,s]
+    if (d.length >= 3 && t.length >= 3 && !d.some(isNaN) && !t.some(isNaN)) {
+      shotDate = new Date(Date.UTC(d[0], d[1]-1, d[2], t[0], t[1], Math.floor(t[2])));
+      tzKnown = true;
+    }
+  }
+  // 2) DateTimeOriginal + явный часовой пояс из EXIF
+  if (!shotDate && exif.DateTimeOriginal) {
+    const offset = exif.OffsetTimeOriginal || exif.OffsetTime;
+    if (offset && /^[+-]\d{2}:\d{2}$/.test(offset)) {
+      const dt = exif.DateTimeOriginal;
+      const local = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}T${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}:${String(dt.getSeconds()).padStart(2,'0')}`;
+      shotDate = new Date(local + offset);
+      tzKnown = true;
+    } else {
+      shotDate = exif.DateTimeOriginal; // трактуем в поясе браузера
+    }
+  }
+  if (!shotDate) return showError('В фото есть координаты, но нет времени съёмки — положение солнца рассчитать нельзя.');
+
+  // --- Солнце ---
+  const pos = SunCalc.getPosition(shotDate, lat, lng);
+  const azDeg = ((pos.azimuth * 180 / Math.PI) + 180) % 360; // 0°=север, по часовой
+  const altDeg = pos.altitude * 180 / Math.PI;
+  const shadowDeg = (azDeg + 180) % 360;
+  const times = SunCalc.getTimes(shotDate, lat, lng);
+
+  // --- Вывод ---
+  document.getElementById('preview').src = URL.createObjectURL(file);
+  document.getElementById('coords').textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
+  document.getElementById('time').textContent = shotDate.toLocaleString('ru-RU', { timeZone: 'UTC' }) + ' UTC';
+  document.getElementById('camera').textContent = [exif.Make, exif.Model].filter(Boolean).join(' ') || '—';
+  document.getElementById('azimuth').textContent = azDeg.toFixed(1) + '° (' + compass(azDeg) + ')';
+  document.getElementById('altitude').textContent = altDeg.toFixed(1) + '°';
+  document.getElementById('shadow').textContent = shadowDeg.toFixed(1) + '° (' + compass(shadowDeg) + ')';
+  const fmt = d => (d && !isNaN(d)) ? d.toISOString().substr(11,5) : '—';
+  document.getElementById('riseset').textContent = fmt(times.sunrise) + ' / ' + fmt(times.sunset);
+  document.getElementById('tzWarn').style.display = tzKnown ? 'none' : 'block';
+  document.getElementById('nightWarn').style.display = altDeg < 0 ? 'block' : 'none';
+
+  // --- Ссылки ---
+  const ms = shotDate.getTime();
+  document.getElementById('shadowmapLink').href =
+    `https://app.shadowmap.org/?lat=${lat.toFixed(5)}&lng=${lng.toFixed(5)}&zoom=17&time=${ms}&basemap=map&hud=true`;
+  document.getElementById('osmLink').href =
+    `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=17/${lat}/${lng}`;
+
+  results.style.display = 'block';
+  renderMap(lat, lng, azDeg, shadowDeg, altDeg);
+}
+
+function compass(deg) {
+  const dirs = ['С','ССВ','СВ','ВСВ','В','ВЮВ','ЮВ','ЮЮВ','Ю','ЮЮЗ','ЮЗ','ЗЮЗ','З','ЗСЗ','СЗ','ССЗ'];
+  return dirs[Math.round(deg / 22.5) % 16];
+}
+
+// Точка на расстоянии d метров по азимуту bearing от (lat,lng)
+function destPoint(lat, lng, bearingDeg, d) {
+  const b = bearingDeg * Math.PI / 180;
+  return [
+    lat + (d * Math.cos(b)) / 111320,
+    lng + (d * Math.sin(b)) / (111320 * Math.cos(lat * Math.PI / 180))
+  ];
+}
+
+function renderMap(lat, lng, azDeg, shadowDeg, altDeg) {
+  if (!map) {
+    map = L.map('map');
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
+    }).addTo(map);
+    layerGroup = L.layerGroup().addTo(map);
+  }
+  layerGroup.clearLayers();
+  map.setView([lat, lng], 17);
+  setTimeout(() => map.invalidateSize(), 100);
+
+  L.marker([lat, lng]).addTo(layerGroup).bindPopup('Место съёмки').openPopup();
+  if (altDeg >= 0) {
+    L.polyline([[lat, lng], destPoint(lat, lng, azDeg, 200)], { color: '#f59e0b', weight: 4 })
+      .addTo(layerGroup).bindTooltip('Солнце → ' + azDeg.toFixed(0) + '°');
+    // Длина тени пропорциональна cot(высоты): низкое солнце = длинная тень
+    const shadowLen = Math.min(250, 60 / Math.max(Math.tan(altDeg * Math.PI / 180), 0.15));
+    L.polyline([[lat, lng], destPoint(lat, lng, shadowDeg, shadowLen)], { color: '#6366f1', weight: 4, dashArray: '8 6' })
+      .addTo(layerGroup).bindTooltip('Тень → ' + shadowDeg.toFixed(0) + '°');
+  }
+}
+</script>
+</body>
+</html>
