@@ -41,6 +41,22 @@
   .btn-osm { background: #334155; color: #e2e8f0; }
   .warn { background: #78350f; border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: .85rem; display: none; }
   .info { background: #1e3a5f; border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: .85rem; display: none; }
+  .searchbar { display: none; gap: 8px; margin-top: 16px; }
+  .searchbar input {
+    flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #475569;
+    background: #1e293b; color: #e2e8f0; font-size: .9rem; outline: none;
+  }
+  .searchbar input:focus { border-color: #f59e0b; }
+  .searchbar button {
+    padding: 10px 18px; border-radius: 8px; border: none; background: #f59e0b;
+    color: #0f172a; font-weight: 600; cursor: pointer; font-size: .9rem;
+  }
+  #searchResults { margin-top: 6px; }
+  #searchResults div {
+    padding: 8px 12px; background: #1e293b; border-radius: 6px; margin-top: 4px;
+    cursor: pointer; font-size: .85rem; color: #cbd5e1;
+  }
+  #searchResults div:hover { background: #27354d; }
   .legend { font-size: .8rem; color: #94a3b8; margin-top: 8px; }
   .legend span { display: inline-block; margin-right: 14px; }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
@@ -73,11 +89,16 @@
         <div class="row"><span class="label">Высота над горизонтом</span><span class="value" id="altitude"></span></div>
         <div class="row"><span class="label">Направление тени</span><span class="value" id="shadow"></span></div>
         <div class="row"><span class="label">Восход / Закат (UTC)</span><span class="value" id="riseset"></span></div>
-        <div class="info" id="pickWarn">&#128205; В этом фото нет GPS-координат. Кликните на карте место съёмки — солнце рассчитается по времени из EXIF. Кликать можно сколько угодно раз.</div>
+        <div class="info" id="pickWarn">&#128205; В этом фото нет GPS-координат. Найдите место через поиск под картой (или приблизьте карту вручную) и кликните точку съёмки — солнце рассчитается по времени из EXIF. Кликать можно сколько угодно раз.</div>
         <div class="warn" id="tzWarn">&#9888;&#65039; В EXIF нет часового пояса — время интерпретировано как в вашем браузере. Положение солнца может быть смещено, если фото снято в другом поясе.</div>
         <div class="warn" id="nightWarn">&#127769; Солнце было ниже горизонта — снимок сделан ночью или в сумерках.</div>
       </div>
     </div>
+    <div class="searchbar" id="searchbar">
+      <input id="searchInput" type="text" placeholder="Найти место: город, адрес, достопримечательность…">
+      <button id="searchBtn">Найти</button>
+    </div>
+    <div id="searchResults"></div>
     <div id="map"></div>
     <p class="legend">
       <span><span class="dot" style="background:#f59e0b"></span>Направление на солнце</span>
@@ -168,8 +189,11 @@ async function handleFile(file) {
 
   if (hasGps) {
     document.getElementById('pickWarn').style.display = 'none';
+    document.getElementById('searchbar').style.display = 'none';
+    document.getElementById('searchResults').innerHTML = '';
     computeAndShow(exif.latitude, exif.longitude);
   } else {
+    document.getElementById('searchbar').style.display = 'flex';
     // Режим ручного выбора места
     document.getElementById('pickWarn').style.display = 'block';
     document.getElementById('nightWarn').style.display = 'none';
@@ -187,6 +211,37 @@ async function handleFile(file) {
 }
 
 // Расчёт солнца и отрисовка для заданной точки (из EXIF или клика по карте)
+// Поиск места по названию — Nominatim (OpenStreetMap, бесплатно)
+const searchInput = document.getElementById('searchInput');
+const searchResults = document.getElementById('searchResults');
+document.getElementById('searchBtn').addEventListener('click', doSearch);
+searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+async function doSearch() {
+  const q = searchInput.value.trim();
+  if (!q) return;
+  searchResults.innerHTML = '<div>Ищу…</div>';
+  try {
+    const resp = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q),
+      { headers: { 'Accept-Language': 'ru' } });
+    const items = await resp.json();
+    searchResults.innerHTML = '';
+    if (!items.length) { searchResults.innerHTML = '<div>Ничего не найдено</div>'; return; }
+    items.forEach(it => {
+      const div = document.createElement('div');
+      div.textContent = it.display_name;
+      div.addEventListener('click', () => {
+        searchResults.innerHTML = '';
+        initMap();
+        map.setView([parseFloat(it.lat), parseFloat(it.lon)], 16);
+      });
+      searchResults.appendChild(div);
+    });
+  } catch (e) {
+    searchResults.innerHTML = '<div>Ошибка поиска — попробуйте позже</div>';
+  }
+}
+
 function computeAndShow(lat, lng) {
   const { shotDate, tzKnown } = current;
 
